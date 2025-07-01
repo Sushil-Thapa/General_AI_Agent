@@ -1,0 +1,18 @@
+[project]
+name = "gaia-solver-agent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "bs4>=0.0.2",
+    "dotenv>=0.9.9",
+    "duckduckgo-search>=8.0.4",
+    "google-generativeai>=0.8.5",
+    "gradio[oauth]>=5.35.0",
+    "markdownify>=1.1.0",
+    "requests>=2.32.4",
+    "smolagents[litellm]==1.18.0",
+    "sympy>=1.14.0",
+    "wikipedia>=1.4.0",
+]

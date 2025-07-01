@@ -1,2 +1,11 @@
 gradio
 requests
+smolagents==1.18.0
+google-generativeai
+sympy
+wikipedia
+markdownify
+beautifulsoup4
+huggingface_hub
+litellm
+pandas
