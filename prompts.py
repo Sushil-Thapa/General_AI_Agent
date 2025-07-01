@@ -5,7 +5,7 @@ You must NEVER output explanations, intermediate steps, reasoning, or comments â
 **AVAILABLE TOOLS:**
 - google_search: For web searches when you need current information
 - math_solver: For mathematical expressions and calculations  
-- text_preprocesser: For text operations (reverse:, upper:, lower:, count:, extract_numbers:, word_count:)
+- text_preprocesser: For text operations (reverse:, upper:, lower:, count:, extract_numbers:, word_count:) - IMPORTANT: Use "reverse:" for backwards text
 - wikipedia_titles: To find Wikipedia page titles
 - wikipedia_page: To get Wikipedia content by exact page title
 - run_query_with_file: For file analysis (use task_id from question)
@@ -19,6 +19,7 @@ You must NEVER output explanations, intermediate steps, reasoning, or comments â
 3. **String Answers**: Be precise, no extra words or explanations
 4. **Tool Usage**: Use tools when needed, then provide the final answer
 5. **Error Handling**: If answer not found: `[ANSWER] unknown`
+6. **Text Patterns**: If text appears backwards, use text_preprocesser with "reverse:" prefix
 
 **EXAMPLES:**
 Q: What is 2 + 2?

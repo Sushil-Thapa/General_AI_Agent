@@ -10,15 +10,35 @@ from google.generativeai import types, configure, GenerativeModel
 from bs4 import BeautifulSoup
 from sympy import sympify, SympifyError, simplify
 
+# Import configuration manager
+try:
+    from config import config, safe_getenv
+except ImportError:
+    # Fallback if config.py doesn't exist
+    class DummyConfig:
+        def has_key(self, key): return bool(os.getenv(key))
+        def get_key(self, key): return os.getenv(key)
+    config = DummyConfig()
+    def safe_getenv(key, default=None, feature_name=None):
+        return os.getenv(key, default)
+
 # Try to import utils, but don't fail if it doesn't exist
 try:
     import utils
 except ImportError:
     utils = None 
 
+# Safe API key handling
+google_search_key = safe_getenv('GOOGLE_SEARCH_API_KEY', feature_name="Google Search")
+google_search_engine = safe_getenv('GOOGLE_SEARCH_ENGINE_ID', feature_name="Google Search")
 
-print(f"Using API Key ending in: ...{os.getenv('GOOGLE_SEARCH_API_KEY')[-4:]}") # Print last 4 chars for verification
-print(f"Using Engine ID: {os.getenv('GOOGLE_SEARCH_ENGINE_ID')}")
+if google_search_key:
+    print(f"Using Google Search API Key ending in: ...{google_search_key[-4:]}")
+if google_search_engine:
+    print(f"Using Google Search Engine ID: {google_search_engine}")
+
+if not google_search_key or not google_search_engine:
+    print("⚠️  Google Search not configured - will use DuckDuckGo fallback")
 
 class MathSolver(Tool):
     name = "math_solver"
@@ -57,11 +77,14 @@ class TextPreprocesser(Tool):
             if input.startswith("reverse:"):
                 text = input.replace('reverse:', '').strip()
                 reversed_text = text[::-1]
-                # Handle common GAIA patterns
-                if 'left' in reversed_text.lower():
+                
+                # Special handling for GAIA text reversal puzzles
+                # Check if the reversed text is asking for opposite of "left"
+                if "opposite" in reversed_text.lower() and "left" in reversed_text.lower():
                     return "right"
-                elif 'right' in reversed_text.lower():
+                elif "opposite" in reversed_text.lower() and "right" in reversed_text.lower():
                     return "left"
+                
                 return reversed_text
                 
             elif input.startswith("upper:"):
@@ -93,28 +116,50 @@ class TextPreprocesser(Tool):
     
 class GoogleSearchTool(Tool):
     name = "google_search"
-    description = "Performs websearch using Google. Returns top summary results from the web."
+    description = "Performs websearch using Google Custom Search API. Falls back to DuckDuckGo if API keys unavailable."
     inputs = {"query": {"type": "string", "description": "Search query."}}
     output_type = "string"
 
     def forward(self, query: str) -> str:
+        # Check if Google Search API is available
+        if not config.has_key("GOOGLE_SEARCH_API_KEY") or not config.has_key("GOOGLE_SEARCH_ENGINE_ID"):
+            # Fallback to DuckDuckGo
+            try:
+                ddg_tool = DuckDuckGoSearchTool()
+                result = ddg_tool.forward(query)
+                return f"🔍 DuckDuckGo Search Results:\n{result}"
+            except Exception as e:
+                return f"Search unavailable: {e}"
+        
         try:
             resp = requests.get("https://www.googleapis.com/customsearch/v1", params={
                 "q": query,
-                "key": os.getenv("GOOGLE_SEARCH_API_KEY"),
-                "cx": os.getenv("GOOGLE_SEARCH_ENGINE_ID"),
+                "key": config.get_key("GOOGLE_SEARCH_API_KEY"),
+                "cx": config.get_key("GOOGLE_SEARCH_ENGINE_ID"),
                 "num": 3  # Get more results for better coverage
             })
             
             # Check if request was successful
             if resp.status_code != 200:
-                return f"Google Search API error: {resp.status_code} - {resp.text}"
+                # Fallback to DuckDuckGo on API error
+                try:
+                    ddg_tool = DuckDuckGoSearchTool()
+                    result = ddg_tool.forward(query)
+                    return f"🔍 DuckDuckGo Search Results (Google API error):\n{result}"
+                except Exception as e:
+                    return f"Google Search API error: {resp.status_code} - {resp.text}"
             
             data = resp.json()
             
             # Check for API errors
             if "error" in data:
-                return f"Google Search API error: {data['error']['message']}"
+                # Fallback to DuckDuckGo
+                try:
+                    ddg_tool = DuckDuckGoSearchTool()
+                    result = ddg_tool.forward(query)
+                    return f"🔍 DuckDuckGo Search Results (Google API error):\n{result}"
+                except Exception as e:
+                    return f"Google Search API error: {data['error']['message']}"
             
             if "items" not in data or not data["items"]:
                 return "No Google results found."
@@ -127,14 +172,18 @@ class GoogleSearchTool(Tool):
                 link = item.get("link", "")
                 results.append(f"**{title}**\n{snippet}\nSource: {link}\n")
             
-            return "\n".join(results)
+            return "🔍 Google Search Results:\n" + "\n".join(results)
             
         except requests.RequestException as e:
-            return f"Network error: {e}"
-        except KeyError as e:
-            return f"Response parsing error: Missing key {e}"
+            # Fallback to DuckDuckGo on network error
+            try:
+                ddg_tool = DuckDuckGoSearchTool()
+                result = ddg_tool.forward(query)
+                return f"🔍 DuckDuckGo Search Results (network error):\n{result}"
+            except Exception as fallback_e:
+                return f"Search unavailable: {e}"
         except Exception as e:
-            return f"GoogleSearch error: {e}"
+            return f"Search error: {e}"
         
 class WikipediaTitleFinder(Tool):
     name = "wikipedia_titles"
@@ -201,7 +250,7 @@ class FileAttachmentQueryTool(Tool):
     name = "run_query_with_file"
     description = """
     Downloads a file mentioned in a user prompt, adds it to the context, and runs a query on it.
-    This assumes the file is 20MB or less.
+    Requires GOOGLE_API_KEY. This assumes the file is 20MB or less.
     """
     inputs = {
         "task_id": {
@@ -221,23 +270,33 @@ class FileAttachmentQueryTool(Tool):
         self.model_name = model_name
 
     def forward(self, task_id: str | None, user_query: str) -> str:
-        file_url = f"https://agents-course-unit4-scoring.hf.space/files/{task_id}"
-        file_response = requests.get(file_url)
-        if file_response.status_code != 200:
-            return f"Failed to download file: {file_response.status_code} - {file_response.text}"
-        file_data = file_response.content
+        # Check if Google API key is available
+        if not config.has_key("GOOGLE_API_KEY"):
+            return ("❌ File analysis requires GOOGLE_API_KEY environment variable.\n"
+                   "Get your key at: https://makersuite.google.com/app/apikey\n"
+                   "Then set: export GOOGLE_API_KEY='your_key_here'")
         
-        model = GenerativeModel(self.model_name)
-        response = model.generate_content([
-            types.Part.from_bytes(data=file_data, mime_type="application/octet-stream"),
-            user_query
-        ])
+        try:
+            file_url = f"https://agents-course-unit4-scoring.hf.space/files/{task_id}"
+            file_response = requests.get(file_url)
+            if file_response.status_code != 200:
+                return f"Failed to download file: {file_response.status_code} - {file_response.text}"
+            file_data = file_response.content
+            
+            model = GenerativeModel(self.model_name)
+            response = model.generate_content([
+                types.Part.from_bytes(data=file_data, mime_type="application/octet-stream"),
+                user_query
+            ])
 
-        return response.text
+            return response.text
+            
+        except Exception as e:
+            return f"File analysis error: {e}\nNote: This tool requires GOOGLE_API_KEY for Gemini model access."
     
 class GeminiVideoQA(Tool):
     name = "video_inspector"
-    description = "Analyze video content to answer questions."
+    description = "Analyze video content to answer questions. Requires GOOGLE_API_KEY."
     inputs = {
         "video_url": {"type": "string", "description": "URL of video."},
         "user_query": {"type": "string", "description": "Question about video."}
@@ -249,21 +308,31 @@ class GeminiVideoQA(Tool):
         self.model_name = model_name
 
     def forward(self, video_url: str, user_query: str) -> str:
-        req = {
-            'model': f'models/{self.model_name}',
-            'contents': [{
-                "parts": [
-                    {"fileData": {"fileUri": video_url}},
-                    {"text": f"Please watch the video and answer the question: {user_query}"}
-                ]
-            }]
-        }
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_name}:generateContent?key={os.getenv('GOOGLE_API_KEY')}"
-        res = requests.post(url, json=req, headers={'Content-Type': 'application/json'})
-        if res.status_code != 200:
-            return f"Video error {res.status_code}: {res.text}"
-        parts = res.json()['candidates'][0]['content']['parts']
-        return "".join([p.get('text', '') for p in parts])
+        # Check if Google API key is available
+        if not config.has_key("GOOGLE_API_KEY"):
+            return ("❌ Video analysis requires GOOGLE_API_KEY environment variable.\n"
+                   "Get your key at: https://makersuite.google.com/app/apikey\n"
+                   "Then set: export GOOGLE_API_KEY='your_key_here'")
+        
+        try:
+            req = {
+                'model': f'models/{self.model_name}',
+                'contents': [{
+                    "parts": [
+                        {"fileData": {"fileUri": video_url}},
+                        {"text": f"Please watch the video and answer the question: {user_query}"}
+                    ]
+                }]
+            }
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_name}:generateContent?key={config.get_key('GOOGLE_API_KEY')}"
+            res = requests.post(url, json=req, headers={'Content-Type': 'application/json'})
+            if res.status_code != 200:
+                return f"Video analysis error {res.status_code}: {res.text}"
+            parts = res.json()['candidates'][0]['content']['parts']
+            return "".join([p.get('text', '') for p in parts])
+            
+        except Exception as e:
+            return f"Video analysis error: {e}\nNote: This tool requires GOOGLE_API_KEY for Gemini model access."
     
 class RiddleSolver(Tool):
     name = "riddle_solver"

@@ -11,14 +11,6 @@ import pandas as pd
 from smolagents import GradioUI, CodeAgent, HfApiModel, ApiModel, InferenceClientModel, LiteLLMModel, ToolCallingAgent, Tool, DuckDuckGoSearchTool
 from agent import JarvisAgent
 
-# Import configuration manager
-try:
-    from config import config, check_required_keys_interactive
-    INTERACTIVE_MODE = True
-except ImportError:
-    INTERACTIVE_MODE = False
-    print("⚠️  config.py not found - running with basic functionality")
-
 # --- Constants ---
 DEFAULT_API_URL = "https://agents-course-unit4-scoring.hf.space"
 CACHE_FILE = "answers_cache.json"
@@ -238,9 +230,11 @@ app_state = AppState()
 def process_questions_async(progress_callback, use_cache: bool = True):
     """Process questions asynchronously"""
     if not app_state.questions_data:
+        progress_callback("No questions loaded. Please fetch questions first.", None)
         return
     
     if app_state.is_processing:
+        progress_callback("Already processing questions...", None)
         return
     
     app_state.is_processing = True
@@ -252,8 +246,9 @@ def process_questions_async(progress_callback, use_cache: bool = True):
                 app_state.questions_data, 
                 use_cache
             )
+            progress_callback("✅ All questions processed successfully!", 100)
         except Exception as e:
-            print(f"Error during processing: {e}")
+            progress_callback(f"❌ Error during processing: {e}", None)
         finally:
             app_state.is_processing = False
     
@@ -321,7 +316,6 @@ def submit_answers_action(profile: gr.OAuthProfile | None):
     finally:
         app_state.is_submitting = False
 
-
 # --- Gradio Interface ---
 with gr.Blocks(title="Optimized GAIA Agent Runner") as demo:
     gr.Markdown("# 🚀 Optimized GAIA Agent Runner")
@@ -358,9 +352,9 @@ with gr.Blocks(title="Optimized GAIA Agent Runner") as demo:
             with gr.Column():
                 use_cache = gr.Checkbox(label="Use Cache", value=True)
                 process_btn = gr.Button("⚡ Process Questions", variant="primary", interactive=False)
-                check_btn = gr.Button("🔄 Check Progress", variant="secondary")
                 
-        progress_text = gr.Textbox(label="Progress", interactive=False, lines=3)
+        progress_text = gr.Textbox(label="Progress", interactive=False, lines=2)
+        progress_bar = gr.Progress()
         
         results_table = gr.DataFrame(label="📊 Results Preview", wrap=True)
     
@@ -382,50 +376,28 @@ with gr.Blocks(title="Optimized GAIA Agent Runner") as demo:
     
     def start_processing(use_cache_val):
         if app_state.is_processing:
-            return "⏳ Already processing...", pd.DataFrame()
+            return "⏳ Already processing...", gr.update()
         
-        if not app_state.questions_data:
-            return "❌ No questions loaded. Please fetch questions first.", pd.DataFrame()
+        def progress_update(message, progress):
+            return message, progress
         
-        # Start processing in background
-        def run_processing():
-            app_state.is_processing = True
-            try:
-                app_state.processed_results = runner.process_questions_parallel(
-                    app_state.questions_data, 
-                    use_cache_val
-                )
-            except Exception as e:
-                print(f"Error during processing: {e}")
-            finally:
-                app_state.is_processing = False
-        
-        thread = threading.Thread(target=run_processing, daemon=True)
-        thread.start()
-        
-        return "🔄 Started processing questions in background...", pd.DataFrame()
+        # Start processing
+        process_questions_async(progress_update, use_cache_val)
+        return "🔄 Started processing questions...", gr.update()
     
-    def check_progress():
+    def update_progress():
         """Check processing status and update table"""
         table = get_results_table()
-        if app_state.is_processing:
-            progress_msg = "🔄 Processing in progress... Click 'Check Progress' to update."
-        elif app_state.processed_results:
-            progress_msg = f"✅ Completed {len(app_state.processed_results)} questions"
-        else:
-            progress_msg = "⏳ Ready to process questions"
-        return progress_msg, table
+        return table
     
-    # Event handlers
     process_btn.click(
         fn=start_processing,
         inputs=[use_cache],
-        outputs=[progress_text, results_table]
-    )
-    
-    check_btn.click(
-        fn=check_progress,
-        outputs=[progress_text, results_table]
+        outputs=[progress_text, progress_bar]
+    ).then(
+        fn=update_progress,
+        outputs=[results_table],
+        every=1  # Update every second
     )
     
     submit_btn.click(
@@ -437,15 +409,6 @@ if __name__ == "__main__":
     print("\n" + "="*50)
     print("🚀 OPTIMIZED GAIA AGENT RUNNER")
     print("="*50)
-    
-    # Check API key configuration
-    if INTERACTIVE_MODE:
-        print("\n🔧 Checking API Key Configuration...")
-        if not config.available_keys:
-            print("⚠️  No API keys configured. Running with limited functionality.")
-            print("💡 For full features, set up API keys as shown above.")
-        else:
-            print("✅ API keys configured - full functionality available")
     
     # Environment info
     space_host = os.getenv("SPACE_HOST")
